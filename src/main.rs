@@ -1,3 +1,4 @@
+mod clock;
 mod config;
 mod events;
 mod gsi;
@@ -9,6 +10,7 @@ mod server;
 use std::sync::{Arc, Mutex};
 
 fn main() {
+    #[cfg(target_os = "linux")]
     unsafe {
         std::env::set_var("GSETTINGS_BACKEND", "memory");
         std::env::set_var("GTK_USE_PORTAL", "0");

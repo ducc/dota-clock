@@ -5,6 +5,7 @@ use gtk4::{Align, Box as GtkBox, CssProvider, Image, Label, Orientation, Window}
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use std::sync::{Arc, Mutex};
 
+use crate::clock::{ClockState, DisplayFrame, Urgency};
 use crate::config::Config;
 use crate::events::FlatEvent;
 use crate::gsi::GameState;
@@ -89,13 +90,14 @@ impl EventWidget {
         }
     }
 
-    fn update(&self, icon_data: &'static [u8], countdown: &str, name: &str, css_class: &str) {
-        let bytes = glib::Bytes::from_static(icon_data);
+    fn apply(&self, icon_file: &str, countdown: &str, name: &str, urgency: &Urgency) {
+        let bytes = glib::Bytes::from_static(icons::bytes(icon_file));
         let texture = gtk4::gdk::Texture::from_bytes(&bytes).unwrap();
         self.image.set_paintable(Some(&texture));
         self.countdown_label.set_text(countdown);
         self.name_label.set_text(name);
 
+        let css_class = urgency_css(urgency);
         for cls in &["urgent", "warning", "soon", "passed", "dimmed"] {
             self.countdown_label.remove_css_class(cls);
             self.container.remove_css_class(cls);
@@ -112,15 +114,44 @@ impl EventWidget {
     }
 }
 
-fn format_time(sec: i64) -> String {
-    let neg = sec < 0;
-    let abs = sec.unsigned_abs();
-    format!(
-        "{}{:}:{:02}",
-        if neg { "-" } else { "" },
-        abs / 60,
-        abs % 60
-    )
+fn urgency_css(u: &Urgency) -> &'static str {
+    match u {
+        Urgency::Urgent => "urgent",
+        Urgency::Warning => "warning",
+        Urgency::Soon => "soon",
+        Urgency::Passed => "passed",
+        Urgency::Dimmed => "dimmed",
+    }
+}
+
+fn render_frame(
+    frame: &DisplayFrame,
+    hbox: &GtkBox,
+    recurring_widgets: &[EventWidget],
+    event_widgets: &[EventWidget],
+) {
+    hbox.set_visible(frame.visible);
+    if !frame.visible {
+        return;
+    }
+
+    for (i, widget) in recurring_widgets.iter().enumerate() {
+        if let Some(Some(item)) = frame.recurring.get(i) {
+            widget.apply(item.icon_file, &item.text, item.name, &item.urgency);
+            widget.show();
+        } else {
+            widget.hide();
+        }
+    }
+
+    for (i, widget) in event_widgets.iter().enumerate() {
+        if let Some(item) = frame.events.get(i) {
+            widget.apply(item.icon_file, &item.text, item.name, &item.urgency);
+            widget.show();
+        } else {
+            widget.hide();
+        }
+    }
 }
 
 pub fn run(
@@ -182,7 +213,12 @@ pub fn run(
         }
     });
 
-    let hbox = GtkBox::new(Orientation::Horizontal, 0);
+    let orientation = if config.vertical {
+        Orientation::Vertical
+    } else {
+        Orientation::Horizontal
+    };
+    let hbox = GtkBox::new(orientation, 0);
     hbox.add_css_class("bar");
     hbox.set_valign(Align::Center);
     hbox.set_can_target(false);
@@ -208,131 +244,13 @@ pub fn run(
     window.present();
 
     let events = Arc::new(events);
-    let shared = shared_state;
-    let last_display_clock = std::cell::Cell::new(i64::MIN);
-    let anchor_clock = std::cell::Cell::new(0i64);
-    let anchor_local_ms = std::cell::Cell::new(0u64);
+    let mut clock_state = ClockState::new();
 
     glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-        let gs = shared.lock().unwrap().clone();
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let gs = shared_state.lock().unwrap().clone();
 
-        if gs.received_at_ms > 0 {
-            let elapsed_ms = now_ms.saturating_sub(anchor_local_ms.get());
-            let projected = if anchor_local_ms.get() > 0 {
-                anchor_clock.get() + (elapsed_ms / 1000) as i64
-            } else {
-                i64::MIN
-            };
-            let drift = (gs.clock_time - projected).abs();
-            if drift > 2 || anchor_local_ms.get() == 0 || gs.paused {
-                anchor_clock.set(gs.clock_time);
-                anchor_local_ms.set(gs.received_at_ms.saturating_sub(gs.subsecond_ms));
-            }
-        }
-
-        let clock = if anchor_local_ms.get() > 0 && !gs.paused {
-            let elapsed_ms = now_ms.saturating_sub(anchor_local_ms.get());
-            anchor_clock.get() + (elapsed_ms / 1000) as i64
-        } else {
-            gs.clock_time
-        };
-
-        hbox.set_visible(gs.in_game());
-        if !gs.in_game() {
-            return glib::ControlFlow::Continue;
-        }
-
-        if clock == last_display_clock.get() {
-            return glib::ControlFlow::Continue;
-        }
-        last_display_clock.set(clock);
-
-        let sec_in_min = ((clock % 60) + 60) % 60;
-        for (i, timing) in recurring.iter().enumerate() {
-            let widget = &recurring_widgets[i];
-            if clock < 0 {
-                widget.hide();
-                continue;
-            }
-
-            // Find nearest target within this minute
-            let mut best_diff = i64::MAX;
-            for &target in &timing.targets {
-                let diff = target - sec_in_min;
-                // Consider wrap-around to next minute
-                let candidates = [diff, diff + 60];
-                for d in candidates {
-                    if d.abs() < best_diff.abs() {
-                        best_diff = d;
-                    }
-                }
-            }
-
-            if best_diff >= 0 && best_diff <= timing.warn_window {
-                let (text, css) = if best_diff == 0 {
-                    ("NOW!".to_string(), "urgent")
-                } else if best_diff <= timing.active_window {
-                    (format!("{}s", best_diff), "urgent")
-                } else if best_diff <= timing.warn_window / 2 {
-                    (format!("{}s", best_diff), "warning")
-                } else {
-                    (format!("{}s", best_diff), "soon")
-                };
-                widget.update(icons::bytes(timing.icon_file), &text, timing.name, css);
-                widget.show();
-            } else if best_diff < 0 && best_diff.abs() <= timing.active_window {
-                widget.update(
-                    icons::bytes(timing.icon_file),
-                    "NOW!",
-                    timing.name,
-                    "urgent",
-                );
-                widget.show();
-            } else {
-                widget.hide();
-            }
-        }
-
-        let mut visible_events: Vec<&FlatEvent> = Vec::new();
-        for ev in events.iter() {
-            if ev.time < clock - 3 {
-                continue;
-            }
-            if visible_events.len() >= max_visible {
-                break;
-            }
-            if ev.time > clock + 300 {
-                break;
-            }
-            visible_events.push(ev);
-        }
-
-        for (i, widget) in event_widgets.iter().enumerate() {
-            if let Some(ev) = visible_events.get(i) {
-                let diff = ev.time - clock;
-                let (countdown_text, css_class) = if diff < 0 {
-                    ("PAST".to_string(), "passed")
-                } else if diff == 0 {
-                    ("NOW!".to_string(), "urgent")
-                } else if diff <= 10 {
-                    (format!("{}s", diff), "urgent")
-                } else if diff <= 30 {
-                    (format!("{}s", diff), "warning")
-                } else if diff <= 60 {
-                    (format!("{}s", diff), "soon")
-                } else {
-                    (format_time(ev.time), "dimmed")
-                };
-
-                widget.update(icons::bytes(ev.icon_file), &countdown_text, ev.name, css_class);
-                widget.show();
-            } else {
-                widget.hide();
-            }
+        if let Some(frame) = clock_state.tick(&gs, &events, &recurring, max_visible) {
+            render_frame(&frame, &hbox, &recurring_widgets, &event_widgets);
         }
 
         glib::ControlFlow::Continue

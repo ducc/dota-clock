@@ -16,6 +16,8 @@ pub struct Config {
     pub icon_size: i32,
     #[serde(default = "default_max_icons")]
     pub max_icons: usize,
+    #[serde(default)]
+    pub vertical: bool,
 }
 
 fn default_anchor() -> String {
@@ -44,6 +46,7 @@ impl Default for Config {
             margin_left: 0,
             icon_size: default_icon_size(),
             max_icons: default_max_icons(),
+            vertical: false,
         }
     }
 }
