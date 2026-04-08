@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::*;
 
 use crate::clock::{ClockState, DisplayFrame, DisplayItem, Urgency};
 use crate::config::Config;
@@ -132,8 +132,14 @@ pub fn run(
         let screen_h = GetSystemMetrics(SM_CYSCREEN);
 
         let (x, y) = match config.anchor.as_str() {
-            "bottom-left" => (config.margin_left, screen_h - window_height - config.margin_bottom),
-            "top-right" => (screen_w - window_width - config.margin_right, config.margin_top),
+            "bottom-left" => (
+                config.margin_left,
+                screen_h - window_height - config.margin_bottom,
+            ),
+            "top-right" => (
+                screen_w - window_width - config.margin_right,
+                config.margin_top,
+            ),
             "top-left" => (config.margin_left, config.margin_top),
             _ => (
                 screen_w - window_width - config.margin_right,
@@ -185,8 +191,8 @@ pub fn run(
             ..Default::default()
         };
         let tip: &[i8] = &[
-            b'D' as i8, b'o' as i8, b't' as i8, b'a' as i8, b' ' as i8,
-            b'C' as i8, b'l' as i8, b'o' as i8, b'c' as i8, b'k' as i8,
+            b'D' as i8, b'o' as i8, b't' as i8, b'a' as i8, b' ' as i8, b'C' as i8, b'l' as i8,
+            b'o' as i8, b'c' as i8, b'k' as i8,
         ];
         nid.szTip[..tip.len()].copy_from_slice(tip);
         let _ = Shell_NotifyIconA(NIM_ADD, &nid);
@@ -202,12 +208,7 @@ pub fn run(
     }
 }
 
-unsafe extern "system" fn wndproc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
+unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_TIMER => {
             let ptr = unsafe { GetWindowLongPtrA(hwnd, GWLP_USERDATA) } as *mut OverlayState;
@@ -215,12 +216,11 @@ unsafe extern "system" fn wndproc(
                 let state = unsafe { &mut *ptr };
                 let gs = state.shared_state.lock().unwrap().clone();
 
-                if let Some(frame) = state.clock_state.tick(
-                    &gs,
-                    &state.events,
-                    &state.recurring,
-                    state.max_icons,
-                ) {
+                if let Some(frame) =
+                    state
+                        .clock_state
+                        .tick(&gs, &state.events, &state.recurring, state.max_icons)
+                {
                     if frame.visible {
                         let _ = unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
                         unsafe { paint(hwnd, &frame, state) };
@@ -249,11 +249,18 @@ unsafe extern "system" fn wndproc(
                 let _ = unsafe { GetCursorPos(&mut pt) };
                 let hmenu = unsafe { CreatePopupMenu() }.unwrap();
                 unsafe {
-                    AppendMenuA(hmenu, MENU_ITEM_FLAGS(0), IDM_QUIT as usize, s!("Quit"))
-                        .unwrap();
+                    AppendMenuA(hmenu, MENU_ITEM_FLAGS(0), IDM_QUIT as usize, s!("Quit")).unwrap();
                     // Required for the menu to dismiss properly
                     let _ = SetForegroundWindow(hwnd);
-                    let _ = TrackPopupMenu(hmenu, TPM_RIGHTALIGN | TPM_BOTTOMALIGN, pt.x, pt.y, Some(0), hwnd, None);
+                    let _ = TrackPopupMenu(
+                        hmenu,
+                        TPM_RIGHTALIGN | TPM_BOTTOMALIGN,
+                        pt.x,
+                        pt.y,
+                        Some(0),
+                        hwnd,
+                        None,
+                    );
                     let _ = DestroyMenu(hmenu);
                 }
             }
@@ -267,8 +274,7 @@ unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_DESTROY => {
-            let ptr =
-                unsafe { GetWindowLongPtrA(hwnd, GWLP_USERDATA) } as *mut OverlayState;
+            let ptr = unsafe { GetWindowLongPtrA(hwnd, GWLP_USERDATA) } as *mut OverlayState;
             if !ptr.is_null() {
                 drop(unsafe { Box::from_raw(ptr) });
             }
@@ -286,9 +292,8 @@ unsafe fn paint(hwnd: HWND, frame: &DisplayFrame, state: &OverlayState) {
 
     // Create memory DC for double buffering
     let mem_dc = unsafe { CreateCompatibleDC(Some(hdc)) };
-    let mem_bmp = unsafe {
-        CreateCompatibleBitmap(hdc, rect.right - rect.left, rect.bottom - rect.top)
-    };
+    let mem_bmp =
+        unsafe { CreateCompatibleBitmap(hdc, rect.right - rect.left, rect.bottom - rect.top) };
     let old_bmp = unsafe { SelectObject(mem_dc, mem_bmp.into()) };
 
     // Fill with colorkey (transparent)
@@ -417,7 +422,22 @@ unsafe fn draw_item(
 
     // Draw name text (smaller, grey)
     let small_font = unsafe {
-        CreateFontA(10, 0, 0, 0, 400, 0, 0, 0, FONT_CHARSET(0), FONT_OUTPUT_PRECISION(0), FONT_CLIP_PRECISION(0), FONT_QUALITY(0), 0, s!("Courier New"))
+        CreateFontA(
+            10,
+            0,
+            0,
+            0,
+            400,
+            0,
+            0,
+            0,
+            FONT_CHARSET(0),
+            FONT_OUTPUT_PRECISION(0),
+            FONT_CLIP_PRECISION(0),
+            FONT_QUALITY(0),
+            0,
+            s!("Courier New"),
+        )
     };
     unsafe { SelectObject(hdc, small_font.into()) };
     unsafe { SetTextColor(hdc, COLORREF(0x00AAAAAA)) };
@@ -458,18 +478,12 @@ unsafe fn draw_icon(hdc: HDC, icon: &DecodedIcon, x: i32, y: i32, size: i32) {
     // Create a temporary DC with the icon bitmap
     let icon_dc = unsafe { CreateCompatibleDC(Some(hdc)) };
     let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-    let dib = unsafe {
-        CreateDIBSection(Some(hdc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
-    }
-    .unwrap();
+    let dib =
+        unsafe { CreateDIBSection(Some(hdc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) }.unwrap();
 
     // Copy pre-multiplied BGRA pixels into the DIB
     unsafe {
-        std::ptr::copy_nonoverlapping(
-            icon.pixels.as_ptr(),
-            bits as *mut u8,
-            icon.pixels.len(),
-        );
+        std::ptr::copy_nonoverlapping(icon.pixels.as_ptr(), bits as *mut u8, icon.pixels.len());
     }
 
     let old = unsafe { SelectObject(icon_dc, dib.into()) };
@@ -482,7 +496,19 @@ unsafe fn draw_icon(hdc: HDC, icon: &DecodedIcon, x: i32, y: i32, size: i32) {
         AlphaFormat: AC_SRC_ALPHA as u8,
     };
     let _ = unsafe {
-        GdiAlphaBlend(hdc, x, y, size, size, icon_dc, 0, 0, icon.width, icon.height, blend)
+        GdiAlphaBlend(
+            hdc,
+            x,
+            y,
+            size,
+            size,
+            icon_dc,
+            0,
+            0,
+            icon.width,
+            icon.height,
+            blend,
+        )
     };
 
     unsafe { SelectObject(icon_dc, old) };

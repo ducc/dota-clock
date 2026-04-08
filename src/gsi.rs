@@ -23,8 +23,22 @@ pub struct GsiPayload {
     pub previously: Option<GsiPreviously>,
 }
 
+fn deserialize_prev_map<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<GsiPrevMap>, D::Error> {
+    // previously.map can be a struct OR a bare boolean (when only a bool field changed)
+    let v = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match v {
+        Some(serde_json::Value::Object(map)) => {
+            Ok(serde_json::from_value(serde_json::Value::Object(map)).ok())
+        }
+        _ => Ok(None),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct GsiPreviously {
+    #[serde(default, deserialize_with = "deserialize_prev_map")]
     pub map: Option<GsiPrevMap>,
 }
 
